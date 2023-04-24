@@ -3,17 +3,36 @@ import numpy.typing as npt
 import matplotlib.pyplot as plt
 from scipy.stats import hypergeom, _distn_infrastructure
 from typing import Union, List, Mapping, Tuple, Optional, Any
+from scipy.special import gammaln, betaln
 from typeguard import typechecked
 import pandas as pd
 from functools import partial
 import multiprocessing
 import time
+import mpmath
 
 ### CONSTANTS
 _GENOME_CONC_PG = 6.6
 _PG_TO_NG = 0.001
 _GENOME_CONC_NG = _GENOME_CONC_PG * _PG_TO_NG
 _UG_TO_NG = 1000
+
+
+
+mpmath.mp.dps = 50  # set the decimal precision to 50
+
+class ExactHypergeom:
+    def __init__(self, N, M, n):
+        self.N = N
+        self.M = M
+        self.n = n
+    
+    def pmf(self, k):
+        numerator = mpmath.log(mpmath.binomial(self.M, k)) + mpmath.log(mpmath.binomial(self.N - self.M, self.n - k))
+        denominator = mpmath.log(mpmath.binomial(self.N, self.n))
+        return float(mpmath.exp(numerator - denominator))
+
+
 
 @typechecked
 def get_coverage_from_gDNA_amount(gDNA_amount: float, genome_conc_ng: float, moi: float, perfection_rate: float, guide_library_size: int):
@@ -29,7 +48,9 @@ def get_gDNA_amount_from_coverage(input_coverage: Union[int, float], genome_conc
 def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MOI: float,  perfection_rate: float, genome_conc_ng: float = _GENOME_CONC_NG, _PCR1_input_number_duplicate:float = 1, PCR1_cycles: int = 5, _PCR1_purification_yield: float = 0.6,
                               _PCR1_purification_eluted_volume: int = 50, _PCR2_input_volume: float = 22.5,
                               PCR2_cycles:int = 7, _PCR2_purification_yield: float = 0.6,
-                              _total_target_reads = 150000, plot=True):
+                              _total_target_reads = 150000, approximation=True, plot=True):
+    print(f"{guide_library_size}, {PCR1_input_ug}, {MOI}, {perfection_rate}, {genome_conc_ng}, {_PCR1_input_number_duplicate}, {PCR1_cycles}, {_PCR1_purification_yield}, {_PCR1_purification_eluted_volume}, {_PCR2_input_volume}, {PCR2_cycles}, {_PCR2_purification_yield}, {_total_target_reads}")
+
     _total_target_reads = int(_total_target_reads)
 
     '''
@@ -38,6 +59,7 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     _PCR1_input_number_molecules: float = (((PCR1_input_ug*_UG_TO_NG)/genome_conc_ng)) * MOI
     _PCR1_input_guide_coverage: float = ((_PCR1_input_number_molecules*perfection_rate)/_PCR1_input_number_duplicate)/guide_library_size
     #print(_PCR1_input_guide_coverage)
+    print(f"_PCR1_input_number_molecules={_PCR1_input_number_molecules}")
     '''
         PCR1 amplification
     '''
@@ -45,6 +67,7 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     _PCR1_product_number_molecules: float = _PCR1_input_number_molecules * 2**PCR1_cycles
     _PCR1_product_number_duplicates: float = _PCR1_input_number_duplicate * 2**PCR1_cycles
     _PCR1_product_guide_coverage: float = (_PCR1_product_number_molecules*perfection_rate) / guide_library_size
+    print(f"_PCR1_product_number_molecules={_PCR1_product_number_molecules}")
 
     #print(_PCR1_product_guide_coverage)
     '''
@@ -53,7 +76,7 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     
     _PCR1_product_purified_number_molecules: float = _PCR1_product_number_molecules * _PCR1_purification_yield
     _PCR1_product_purified_number_duplicates: float = _PCR1_product_number_duplicates * _PCR1_purification_yield 
-
+    print(f"_PCR1_product_purified_number_molecules={_PCR1_product_purified_number_molecules}")
     '''
     PCR2 input
     '''
@@ -61,6 +84,7 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     _PCR2_input_number_molecules: float  = _PCR2_input_fraction * _PCR1_product_purified_number_molecules
     _PCR2_input_guide_coverage: float = _PCR2_input_number_molecules / guide_library_size
     #print(_PCR2_input_guide_coverage)
+    print(f"_PCR2_input_number_molecules={_PCR2_input_number_molecules}")
     
     '''
     Determine distribution of number of duplicates in PCR2 input
@@ -70,7 +94,7 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     population_size: int = int(_PCR1_product_purified_number_molecules)
     success_size: int = int(_PCR1_product_purified_number_duplicates)
     trial_count: int = int(_PCR2_input_number_molecules)
-
+    print(f"trial_count={trial_count}")
     #print(f"Number duplicates in PCR2 distribution: hypergeom(N={population_size}, M={success_size}, n={trial_count})")
     num_dups_in_PCR2_input_DIST: _distn_infrastructure.rv_frozen = hypergeom(population_size, success_size, trial_count)
     #num_dups_in_PCR2_input_EXPECTED_VALUE = hypergeom.mean(population_size, success_size, trial_count)
@@ -85,17 +109,25 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     num_dups_in_PCR2_input_VALUES: np.ndarray  = np.arange(num_dups_in_PCR2_input_VALUES_LEFT_QUANTILE, num_dups_in_PCR2_input_VALUES_RIGHT_QUANTILE)
     # For each x-value in the interval of interest, get the probability of that number of rarities in the PCR1 input
     num_dups_in_PCR2_input_PROB: np.ndarray = num_dups_in_PCR2_input_DIST.pmf(num_dups_in_PCR2_input_VALUES)
+    print(f"num_dups_in_PCR2_input_VALUES={num_dups_in_PCR2_input_VALUES}")
+    print(f"num_dups_in_PCR2_input_PROB={num_dups_in_PCR2_input_PROB}")
+    print(sum(num_dups_in_PCR2_input_PROB))
+    
     '''
     PCR2 amplification
     '''
     _PCR2_product_number_molecules: float = _PCR2_input_number_molecules * 2**PCR2_cycles
     num_dups_in_PCR2_prod_VALUES: np.ndarray = num_dups_in_PCR2_input_VALUES * 2**PCR2_cycles
-    
+    print(f"_PCR2_product_number_molecules={_PCR2_product_number_molecules}")
+    print(f"num_dups_in_PCR2_prod_VALUES={num_dups_in_PCR2_prod_VALUES}")
     '''
     PCR2 purification
     '''
     _PCR2_product_purified_number_molecules: float = _PCR2_product_number_molecules * _PCR2_purification_yield
     num_dups_in_PCR2_prod_purified_VALUES: np.ndarray = num_dups_in_PCR2_prod_VALUES * _PCR2_purification_yield
+
+    print(f"_PCR2_product_purified_number_molecules={_PCR2_product_purified_number_molecules}")
+    print(f"num_dups_in_PCR2_prod_purified_VALUES={num_dups_in_PCR2_prod_purified_VALUES}")
 
     '''
         NGS
@@ -103,12 +135,29 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     population_size: int = int(_PCR2_product_purified_number_molecules)
     success_sizes: np.ndarray = num_dups_in_PCR2_prod_purified_VALUES.astype(np.int32)
     trial_count: int = _total_target_reads
-    num_dups_in_NGS_input_2D_DIST: np.ndarray = np.asarray([hypergeom(population_size, success_size, trial_count) for success_size in success_sizes]) # for each potential amount of duplicates of a PCR1 input molecule, get distribution of number of duplicates in reads
+
+    print(f"population_size={population_size}")
+    print(f"success_sizes={success_sizes}")
+    print(f"trial_count={trial_count}")
+
+    if approximation == True:
+        print("PERFORING APPROX")
+        num_dups_in_NGS_input_2D_DIST: np.ndarray = np.asarray([poisson(mu=trial_count*(success_size/population_size)) for success_size in success_sizes]) # for each potential amount of duplicates of a PCR1 input molecule, get distribution of number of duplicates in reads
+    else:
+        print("PERFORING EXACT")
+        num_dups_in_NGS_input_2D_DIST: np.ndarray = np.asarray([ExactHypergeom(population_size, success_size, trial_count) for success_size in success_sizes]) # for each potential amount of duplicates of a PCR1 input molecule, get distribution of number of duplicates in reads
+    
+    print(f"num_dups_in_NGS_input_2D_DIST: {[(population_size, success_size, trial_count) for success_size in success_sizes]}")
 
     ngs_duplicate_threshold = 15
     num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES: np.ndarray = np.arange(0, ngs_duplicate_threshold) # number of reads per input molecule
-    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS: np.ndarray = np.asarray([sum([num_dups_in_NGS_input_2D_DIST[i].pmf(num_reads_per_input) *  num_dups_in_PCR2_input_PROB[i] for i in range(len(num_dups_in_PCR2_input_PROB))]) for num_reads_per_input in num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES])
+    print(f"num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES={num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES}")
+    print(f"pmf: {np.asarray([[num_dups_in_NGS_input_2D_DIST[i].pmf(num_reads_per_input) *  num_dups_in_PCR2_input_PROB[i] for i in range(len(num_dups_in_PCR2_input_PROB))] for num_reads_per_input in num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES])}")
+    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS: np.ndarray = np.asarray([np.nansum([num_dups_in_NGS_input_2D_DIST[i].pmf(num_reads_per_input) *  num_dups_in_PCR2_input_PROB[i] for i in range(len(num_dups_in_PCR2_input_PROB))]) for num_reads_per_input in num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES])
     
+    print(f"num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES={num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES}")
+    print(f"num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS={num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS}")
+
     #average_num_of_duplicates_per_PCR1_input_molecule: float = sum(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[np.where(np.isin(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES,np.arange(2,ngs_duplicate_threshold)))[0]] * (np.arange(2,ngs_duplicate_threshold)-1)) * _PCR1_input_number_molecules
     
     #num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES_ZT: np.ndarray = num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES[1:]
@@ -129,8 +178,11 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
         plt.show()
 
     # Get the exact guide coverage
-    guide_coverage_exact = (((_PCR1_input_number_molecules*(1-num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[0]))*perfection_rate)/_PCR1_input_number_duplicate)/guide_library_size
+    print(f"Nonzero probability: {num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[0]}")
+    prob_zero_duplicate = 0 if np.isnan(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[0]) else num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[0]
+    guide_coverage_exact = (((_PCR1_input_number_molecules*(1-prob_zero_duplicate))*perfection_rate)/_PCR1_input_number_duplicate)/guide_library_size
     
+    print(guide_coverage_exact)
     return guide_coverage_exact
 
 
@@ -175,8 +227,10 @@ def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfect
                                     _total_target_reads=int(total_reads), perfection_rate=perfection_rate, genome_conc_ng=genome_conc_ng, plot=False) for total_reads in total_reads_targets_res]
     
     # Get the reads for the target coverage
+    print(f"Input to interop: {(np.asarray(guide_coverages_res), np.asarray(total_reads_targets_res))}")
     get_target_coverage_linear_interop_p = partial(get_target_coverage_linear_interop, np.asarray(guide_coverages_res), np.asarray(total_reads_targets_res))
 
+    print(f"target_coverage_suggested: {target_coverage_suggested}")
     target_read_amount_suggested = get_target_coverage_linear_interop_p(target_coverage=target_coverage_suggested)
 
     if target_coverage_input is not None:
@@ -185,6 +239,7 @@ def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfect
             target_read_amount_input=np.nan
 
 
+    print(f"xlim: {[max_reads + (max_reads/10), target_read_amount_suggested + (target_read_amount_suggested/10)]}")
     # Visualize
     fig, ax = plt.subplots()
     ax.scatter(total_reads_targets_res, guide_coverages_res)
@@ -374,3 +429,45 @@ def process_sample_sheet(sample_sheet: pd.DataFrame, target_coverage_percentage:
         "result_dict_list": result_dict_list,
         "sample_sheet_with_results": sample_sheet_with_results
     }
+
+from scipy.stats import binom
+from scipy.stats import poisson
+if __name__ == "__main__":
+
+    print(hypergeom(50000, 25, 20).pmf(0))
+    from scipy.special import comb
+
+    N = 8043054545
+    M = 230
+    n = 18540480
+    k = 0
+
+    term1 = comb(M, k)
+    term2 = comb(N-M, n-k)
+    term3 = comb(N, n)
+    hypergeom_term = term1 * term2 / term3
+    print(hypergeom_term)
+
+    M, n, N = (10053818181, 301, 18540480)
+    p = n/M
+    lambda_ = N * p
+    hypergeom_pmf = [hypergeom(M, n, N).pmf(i) for i in range(15)]
+    print(hypergeom_pmf)
+    # Calculate the probability mass function (PMF) for k=0
+    binom_pmf = [binom.pmf(k=i, n=N, p=p) for i in range(15)]
+
+    print(binom_pmf)
+
+    
+    
+    print(lambda_)
+
+    # Calculate the PMF for k=0
+    poisson_pmf = [poisson.pmf(k=i, mu=lambda_) for i in range(15)]
+
+    print(poisson_pmf)
+
+    simulate_gRNA_library_prep(guide_library_size=11036, PCR1_input_ug=100, MOI=1,  perfection_rate=0.875, genome_conc_ng=0.0066, _PCR1_input_number_duplicate=1, PCR1_cycles=5, _PCR1_purification_yield=0.6,
+                              _PCR1_purification_eluted_volume=50, _PCR2_input_volume=22.5,
+                              PCR2_cycles=7, _PCR2_purification_yield=0.6,
+                              _total_target_reads=18540480, approximation=False, plot=True)
