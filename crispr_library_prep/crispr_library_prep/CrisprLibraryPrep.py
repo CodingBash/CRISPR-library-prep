@@ -7,6 +7,7 @@ from typeguard import typechecked
 import pandas as pd
 from functools import partial
 import multiprocessing
+import time
 
 ### CONSTANTS
 _GENOME_CONC_PG = 6.6
@@ -15,10 +16,22 @@ _GENOME_CONC_NG = _GENOME_CONC_PG * _PG_TO_NG
 _UG_TO_NG = 1000
 
 @typechecked
+def get_coverage_from_gDNA_amount(gDNA_amount: float, genome_conc_ng: float, moi: float, perfection_rate: float, guide_library_size: int):
+    input_coverage = (((((gDNA_amount*_UG_TO_NG)/genome_conc_ng)*moi))*perfection_rate)/guide_library_size
+    return input_coverage
+
+@typechecked
+def get_gDNA_amount_from_coverage(input_coverage: Union[int, float], genome_conc_ng: float, moi: float, perfection_rate: float, guide_library_size: int):
+    gDNA_amount = (input_coverage * guide_library_size * genome_conc_ng) / (_UG_TO_NG * moi * perfection_rate)
+    return gDNA_amount
+
+@typechecked
 def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MOI: float,  perfection_rate: float, genome_conc_ng: float = _GENOME_CONC_NG, _PCR1_input_number_duplicate:float = 1, PCR1_cycles: int = 5, _PCR1_purification_yield: float = 0.6,
                               _PCR1_purification_eluted_volume: int = 50, _PCR2_input_volume: float = 22.5,
                               PCR2_cycles:int = 7, _PCR2_purification_yield: float = 0.6,
-                              _total_target_reads: int = 150000, plot=True):
+                              _total_target_reads = 150000, plot=True):
+    _total_target_reads = int(_total_target_reads)
+
     '''
     PCR1 input
     '''
@@ -70,11 +83,8 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
     #print(f"Considering PCR duplicates in range: {num_dups_in_PCR2_input_VALUES_LEFT_QUANTILE} to {num_dups_in_PCR2_input_VALUES_RIGHT_QUANTILE}")
 
     num_dups_in_PCR2_input_VALUES: np.ndarray  = np.arange(num_dups_in_PCR2_input_VALUES_LEFT_QUANTILE, num_dups_in_PCR2_input_VALUES_RIGHT_QUANTILE)
-
     # For each x-value in the interval of interest, get the probability of that number of rarities in the PCR1 input
     num_dups_in_PCR2_input_PROB: np.ndarray = num_dups_in_PCR2_input_DIST.pmf(num_dups_in_PCR2_input_VALUES)
-
-    
     '''
     PCR2 amplification
     '''
@@ -91,22 +101,22 @@ def simulate_gRNA_library_prep(guide_library_size: int, PCR1_input_ug: float, MO
         NGS
     '''
     population_size: int = int(_PCR2_product_purified_number_molecules)
-    success_sizes: np.ndarray = num_dups_in_PCR2_prod_purified_VALUES.astype(int)
+    success_sizes: np.ndarray = num_dups_in_PCR2_prod_purified_VALUES.astype(np.int32)
     trial_count: int = _total_target_reads
-
     num_dups_in_NGS_input_2D_DIST: np.ndarray = np.asarray([hypergeom(population_size, success_size, trial_count) for success_size in success_sizes]) # for each potential amount of duplicates of a PCR1 input molecule, get distribution of number of duplicates in reads
-    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES: np.ndarray = np.arange(0, 1000) # number of reads per input molecule
+
+    ngs_duplicate_threshold = 15
+    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES: np.ndarray = np.arange(0, ngs_duplicate_threshold) # number of reads per input molecule
     num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS: np.ndarray = np.asarray([sum([num_dups_in_NGS_input_2D_DIST[i].pmf(num_reads_per_input) *  num_dups_in_PCR2_input_PROB[i] for i in range(len(num_dups_in_PCR2_input_PROB))]) for num_reads_per_input in num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES])
     
-    average_num_of_duplicates_per_PCR1_input_molecule: float = sum(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[np.where(np.isin(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES,np.arange(2,1000)))[0]] * (np.arange(2,1000)-1)) * _PCR1_input_number_molecules
+    #average_num_of_duplicates_per_PCR1_input_molecule: float = sum(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[np.where(np.isin(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES,np.arange(2,ngs_duplicate_threshold)))[0]] * (np.arange(2,ngs_duplicate_threshold)-1)) * _PCR1_input_number_molecules
     
-    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES_ZT: np.ndarray = num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES[1:]
-    num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS_ZT: np.ndarray = num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[1:]
+    #num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES_ZT: np.ndarray = num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES[1:]
+    #num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS_ZT: np.ndarray = num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[1:]
     
-
     # Plot the hypergeometric distribution for number of duplicates in PCR1 input
     if plot:
-        threshold=15
+        threshold=ngs_duplicate_threshold
         fig = plt.figure()
         ax = fig.add_subplot(111)
         ax.plot(num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_VALUES[:threshold], num_dups_in_NGS_input_1D_DIST_MARGINAL_NGS_PROBS[:threshold], 'bo', label="Exact Hypergeometric")
@@ -141,14 +151,26 @@ def get_target_coverage_linear_interop(guide_coverages_np: np.ndarray, total_rea
 
 # TODO 20230417 - For target_coverage_percentage, a future step is to determine the inflection point manually by either the simulation result or from solving the hypergeometric distribution (which is definitely possible) 
 @typechecked
-def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfection_rate: float, guide_library_size:int, genome_conc_ng: float = _GENOME_CONC_NG, target_coverage_input=None, target_coverage_percentage: float=0.70, read_intervals_count: int= 20):
+def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfection_rate: float, guide_library_size:int, genome_conc_ng: float = _GENOME_CONC_NG, target_coverage_input=None, target_coverage_percentage: float=0.70, read_intervals_count: int= 50, cores=1):
+    print(f"Testing simulation for gDNA_amount {gDNA_amount}")
 
-    PCR1_input_coverage = (((((gDNA_amount*_UG_TO_NG)/genome_conc_ng)*moi))*perfection_rate)/guide_library_size
+    PCR1_input_coverage = get_coverage_from_gDNA_amount(gDNA_amount= gDNA_amount, genome_conc_ng = genome_conc_ng, moi= moi, perfection_rate=perfection_rate, guide_library_size=guide_library_size)
     target_coverage_suggested = PCR1_input_coverage * target_coverage_percentage
-    max_reads = PCR1_input_coverage * guide_library_size * 5
+    max_reads = PCR1_input_coverage * guide_library_size *  2
+    
     
     # Retrieve list of reads to pass into simulation then run simulation
-    total_reads_targets_res = np.arange(max_reads/read_intervals_count, max_reads, max_reads/read_intervals_count)
+    total_reads_targets_res = np.arange(max_reads/read_intervals_count, max_reads, max_reads/read_intervals_count).astype(int)
+
+    print(total_reads_targets_res)
+    simulate_gRNA_library_prep_p = partial(simulate_gRNA_library_prep, guide_library_size = guide_library_size, PCR1_input_ug = gDNA_amount, MOI = moi, perfection_rate=perfection_rate, genome_conc_ng=genome_conc_ng, plot=False)
+    if cores == 1:
+         guide_coverages_res = [simulate_gRNA_library_prep_p(_total_target_reads=total_reads) for total_reads in total_reads_targets_res]
+    else:
+        with multiprocessing.Pool(processes=cores) as pool:
+            guide_coverages_res = pool.map(simulate_gRNA_library_prep_p, total_reads_targets_res)
+            
+
     guide_coverages_res = [simulate_gRNA_library_prep(guide_library_size = guide_library_size, PCR1_input_ug = gDNA_amount, MOI = moi,
                                     _total_target_reads=int(total_reads), perfection_rate=perfection_rate, genome_conc_ng=genome_conc_ng, plot=False) for total_reads in total_reads_targets_res]
     
@@ -179,7 +201,7 @@ def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfect
     ax.set_ylabel("Guide Coverage")
     ax.set_title(f"Sample={sample_name}\nGuide Coverage by Total Reads Sequence\ngDNA amount={gDNA_amount}, MOI={moi}")
     ax.set_ylim(0, PCR1_input_coverage + 20)
-    ax.set_xlim(0, np.maximum(max_reads + (max_reads/10), target_read_amount_suggested + (target_read_amount_suggested/10)))
+    ax.set_xlim(0, np.nanmax([max_reads + (max_reads/10), target_read_amount_suggested + (target_read_amount_suggested/10)]))
     ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
 
     return {
@@ -195,8 +217,17 @@ def get_target_coverage(gDNA_amount: float, moi: float, sample_name:str, perfect
 
 
 @typechecked
-def get_target_coverage_per_sample(ideal_gDNA_amount: Union[None, float], max_gDNA_amount: float, moi: float, sample_name:str, perfection_rate: float, guide_library_size:int, genome_conc_ng: float = _GENOME_CONC_NG, target_coverage_input=None, target_coverage_percentage: float=0.70, max_target_coverage_input: int = 600, read_intervals_count: int= 20, gDNA_intervals_count: int = 5, cores=1):
+def get_target_coverage_per_sample(ideal_gDNA_amount: Union[None, float], max_gDNA_amount: float, moi: float, sample_name:str, perfection_rate: float, guide_library_size:int, genome_conc_ng: float = _GENOME_CONC_NG, target_coverage_input=None, target_coverage_percentage: float=0.70, max_target_coverage_input: int = 600, read_intervals_count: int= 50, gDNA_intervals_count: int = 5, cores=1):
     print(f"Processing sample: {sample_name}")
+
+    # Truncate max_gDNA_amount if too high
+    max_input_coverage = (max_target_coverage_input * (1/(target_coverage_percentage))) # Get the max input coverage based on the max desired coverage and the target_coverqage_percentage (overshoot a bit by * 0.5)
+    input_coverage_for_max_gDNA_amount = get_coverage_from_gDNA_amount(gDNA_amount= max_gDNA_amount, genome_conc_ng = genome_conc_ng, moi= moi, perfection_rate=perfection_rate, guide_library_size=guide_library_size)
+    gDNA_amount_for_max_input_coverage = get_gDNA_amount_from_coverage(input_coverage=max_input_coverage, genome_conc_ng = genome_conc_ng, moi= moi, perfection_rate=perfection_rate, guide_library_size=guide_library_size)
+    if max_gDNA_amount > gDNA_amount_for_max_input_coverage:
+        print(f"{max_gDNA_amount} truncated to {gDNA_amount_for_max_input_coverage}")
+        max_gDNA_amount = gDNA_amount_for_max_input_coverage
+
     # Generate list of all gDNA ranges to test
     gDNA_amount_tests = np.arange(max_gDNA_amount/gDNA_intervals_count, max_gDNA_amount, max_gDNA_amount/gDNA_intervals_count)
     
@@ -205,9 +236,8 @@ def get_target_coverage_per_sample(ideal_gDNA_amount: Union[None, float], max_gD
     if (ideal_gDNA_amount is not None) and (ideal_gDNA_amount not in gDNA_amount_tests):
         gDNA_amount_tests = np.append(gDNA_amount_tests, ideal_gDNA_amount)
     
-
     # Perform simulation for each gDNA test and visualize
-    get_target_coverage_p = partial(get_target_coverage, moi=moi, sample_name=sample_name, perfection_rate=perfection_rate, guide_library_size=guide_library_size, genome_conc_ng=genome_conc_ng, target_coverage_input=target_coverage_input, target_coverage_percentage=target_coverage_percentage, read_intervals_count=read_intervals_count)
+    get_target_coverage_p = partial(get_target_coverage, moi=moi, sample_name=sample_name, perfection_rate=perfection_rate, guide_library_size=guide_library_size, genome_conc_ng=genome_conc_ng, target_coverage_input=target_coverage_input, target_coverage_percentage=target_coverage_percentage, read_intervals_count=read_intervals_count, cores=1)
 
     if cores == 1:
         print(gDNA_amount_tests)
@@ -259,18 +289,19 @@ def get_target_coverage_per_sample(ideal_gDNA_amount: Union[None, float], max_gD
         "visualization_ax": ax
     }
 
-def process_sample_sheet(sample_sheet: pd.DataFrame, target_coverage_percentage: float, max_target_coverage_input: float, suggested_target_coverage_amounts: List[Union[float, int]], cores=1):
+def process_sample_sheet(sample_sheet: pd.DataFrame, target_coverage_percentage: float, max_target_coverage_input: float, suggested_target_coverage_amounts: List[Union[float, int]], read_intervals_count: int =50, cores=1):
     def process_row(row):
         return get_target_coverage_per_sample(
             ideal_gDNA_amount=None,
             max_gDNA_amount=row["gDNA_amount_ug"], 
             moi=row["moi"],
             sample_name=row["sample_name"],
-            guide_library_size=row["guide_library_size"], 
-            target_coverage_input=row["target_coverage_input"], 
+            guide_library_size=int(row["guide_library_size"]), 
+            target_coverage_input=int(row["target_coverage_input"]), 
             perfection_rate=row["perfection_rate"],
             target_coverage_percentage=target_coverage_percentage,
             max_target_coverage_input=max_target_coverage_input,
+            read_intervals_count=read_intervals_count,
             cores=cores)
     result_dict_list = sample_sheet.apply(process_row, axis=1)
 
@@ -283,12 +314,17 @@ def process_sample_sheet(sample_sheet: pd.DataFrame, target_coverage_percentage:
         target_read_amount_suggested_list = []
         gDNA_for_target_coverage_list = []
         for suggested_target_coverage_amount in suggested_target_coverage_amounts:
+            max_gDNA_amount = result_dict["max_gDNA_target_coverage_suggested_result"][0]
             gDNA_for_target_coverage = result_dict["get_gDNA_for_suggested_target_coverage_callable"](suggested_target_coverage_amount)
+            if gDNA_for_target_coverage <= max_gDNA_amount:
+                target_coverage_result = result_dict["get_target_coverage_for_gDNA_callable"](gDNA_for_target_coverage)  
             
-            target_coverage_result = result_dict["get_target_coverage_for_gDNA_callable"](gDNA_for_target_coverage)  
-            
-            target_coverage_suggested = target_coverage_result["target_coverage_suggested"]
-            target_read_amount_suggested = target_coverage_result["target_read_amount_suggested"]
+                target_coverage_suggested = int(target_coverage_result["target_coverage_suggested"])
+                target_read_amount_suggested = int(target_coverage_result["target_read_amount_suggested"])
+            else:
+                gDNA_for_target_coverage = np.nan
+                target_coverage_suggested = np.nan
+                target_read_amount_suggested = np.nan
 
             target_coverage_suggested_list.append(target_coverage_suggested)
             target_read_amount_suggested_list.append(target_read_amount_suggested)
@@ -297,16 +333,16 @@ def process_sample_sheet(sample_sheet: pd.DataFrame, target_coverage_percentage:
         
         added_values = []
         added_indices = []    
-        for i in range(len(suggested_target_coverage_amounts)):
+        for i, suggested_target_coverage_amount in enumerate(suggested_target_coverage_amounts):
             added_values.extend([
                 gDNA_for_target_coverage_list[i],
                 target_coverage_suggested_list[i], 
                 target_read_amount_suggested_list[i]])
             
             added_indices.extend([
-                f"gDNA_for_suggested_target_coverage_{suggested_target_coverage_amounts[i]}",
-                f"coverage_for_suggested_target_coverage_{suggested_target_coverage_amounts[i]}",
-                f"reads_for_suggested_target_coverage_{suggested_target_coverage_amounts[i]}"])
+                f"gDNA_for_suggested_target_coverage_{suggested_target_coverage_amount}",
+                f"coverage_for_suggested_target_coverage_{suggested_target_coverage_amount}",
+                f"reads_for_suggested_target_coverage_{suggested_target_coverage_amount}"])
         
         result_series_values = [
             f"{result_dict['target_gDNA_for_max_coverage_result'][0]:.2f}",
